@@ -1,0 +1,29 @@
+import { Params } from "next/dist/shared/lib/router/utils/route-matcher";
+import { NextRequest, NextResponse } from "next/server";
+import { MessagesController } from "../../controller/MessagesController";
+import { WidgetController } from "../../controller/WidgetController";
+import { validateDomain } from "../../validators/domainValidator";
+
+export async function POST(request: NextRequest, { params }: { params: Params }) {
+    try {
+        const body: any = await request.json();
+        await validateDomain(request, body.bot_id)
+        const ip = request.headers.get('x-forwarded-for')
+        const result = await new WidgetController().postMessage(body, ip);
+        return new Response(result)
+    } catch (error: any) {
+        if (error.statusCode == 422) {
+            return NextResponse.json(
+                { message: error.data[0] },
+                { status: error.statusCode }
+            );
+        } else if (error.statusCode) {
+            return NextResponse.json(
+                { message: error.message, data: error.data },
+                { status: error.statusCode }
+            );
+        } else {
+            return NextResponse.json({ message: error.message }, { status: 500 });
+        }
+    }
+}

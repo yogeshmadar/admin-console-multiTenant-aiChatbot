@@ -1,0 +1,49 @@
+.hidden-lg-block {
+    display: none; 
+}
+
+.block-lg-hidden {
+    display: block; 
+}
+
+@media (min-width: 1024px) {
+    .hidden-lg-block {
+        display: block; 
+    }
+    .block-lg-hidden {
+        display: none; 
+    }
+}
+
+  @media (min-width: 768px) {
+    .list-container {
+      width: 30vw; 
+    }
+  }
+
+
+
+
+  /* chatbots page css */
+  
+.custom-container {
+    margin-left: 0;
+  }
+  
+  @media (min-width: 768px) and (max-width: 1023px) {
+    .custom-container {
+      margin-left: 0; 
+    }
+  }
+  
+  @media (min-width: 1024px) {
+    .custom-container {
+      margin-left: 17.35vw;
+    }
+  }
+  
+  @media (max-width: 600px) {
+    .custom-container {
+      margin-left: 0;
+    }
+  }

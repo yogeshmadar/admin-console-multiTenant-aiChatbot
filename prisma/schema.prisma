@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgres"
+  url      = env("DATABASE_URL")
+}
+model Users {
+  UserID       String    @id @default(uuid()) @db.Uuid
+  Email        String    @unique
+  PasswordHash String    @db.VarChar(255)
+  FirstName    String    @db.VarChar(50)
+  LastName     String?   @db.VarChar(50)
+  CreatedDate  DateTime? @default(now()) @db.Timestamp(6)
+  IsActive     Boolean?  @default(true)
+}
+
+model MessageThreads {
+  ThreadID    String     @id @default(uuid()) @db.Uuid
+  BotID       String     @db.Uuid
+  Subject     String?    @db.VarChar(255)
+  Email       String     @db.VarChar(100)
+  FirstName   String     @db.VarChar(50)
+  LastName    String?    @db.VarChar(50)
+  CreatedDate DateTime?  @default(now()) @db.Timestamp(6)
+  Phone       String?    @db.VarChar(20)
+  Messages    Messages[]
+  Chatbot     ChatBots   @relation(fields: [BotID], references: [BotID])
+}
+
+model Messages {
+  MessageID    String         @id @default(uuid()) @db.Uuid
+  ThreadID     String         @db.Uuid
+  SenderID     Int
+  ReceiverID   Int
+  Message      String         @db.Text
+  Feedback     String?        @db.VarChar(100)
+  SentDateTime DateTime?      @default(now()) @db.Timestamp(6)
+  Ip           String?        @db.VarChar(100)
+  Thread       MessageThreads @relation(fields: [ThreadID], references: [ThreadID])
+}
+
+model ChatBots {
+  BotID             String           @id @default(uuid()) @db.Uuid
+  BotName           String           @db.VarChar(100)
+  Description       String           @db.Text
+  ThemeColor        String           @db.VarChar(100)
+  PrivacyPolicy     String?          @db.Text
+  SiteMapUrl        String           @db.Text
+  WhitelistedDomain String           @db.VarChar(255)
+  CreatedDateTime   DateTime?        @default(now()) @db.Timestamp(6)
+  UpdatedDateTime   DateTime?        @updatedAt @default(now()) @db.Timestamp(6)
+  IsActive          Boolean?         @default(true)
+  CrawlErrors       String?          @db.Text
+  InitialMessage    String?          @db.VarChar(255)
+  HelpdeskUrl       String?          @db.Text
+  CustomPrompt      String?          @db.Text
+  InitialContext    String?          @db.VarChar(255)
+  MessageThreads    MessageThreads[]
+}

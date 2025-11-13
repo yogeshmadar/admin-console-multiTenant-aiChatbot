@@ -1,0 +1,27 @@
+.popper-container {
+  width: 35vw;
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .popper-container {
+    width: 70vw;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1440px) {
+  .popper-container {
+    width: 45vw;
+  }
+}
+
+@media (min-width: 1440px) {
+  .popper-container {
+    width: 35vw;
+  }
+}
+
+@media (max-width: 600px) {
+    .popper-container {
+        width: 50vw; 
+    }
+  }
