@@ -17,6 +17,16 @@ pipeline {
       }
     }
 
+  stage('Prepare workspace') {
+    steps {
+      // deleteDir() removes all files in the current workspace (runs as the Jenkins agent user)
+      script {
+      echo "Cleaning workspace to avoid stale files / permission issues"
+      deleteDir()
+    }
+  }
+}
+
     stage('Install') {
       steps {
         sh 'npm ci'
