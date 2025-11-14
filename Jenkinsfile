@@ -2,34 +2,53 @@ pipeline {
   agent any
 
   tools {
-    // Use NodeJS tool name set in Global Tool Configuration; comment this if you're using system node
+    // Ensure this tool name exists in Manage Jenkins → Global Tool Configuration
     nodejs 'NodeJS_18'
   }
 
   environment {
     NODE_ENV = 'production'
+    // Configure npm retry behavior and registry (adjust if you use a proxy/internal registry)
+    NPM_CONFIG_REGISTRY = 'https://registry.npmjs.org/'
+    NPM_CONFIG_FETCH_RETRIES = '5'
+    NPM_CONFIG_FETCH_RETRY_FACTOR = '2'
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT = '1000'
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT = '60000'
   }
 
   stages {
+    // Clean workspace first (avoid stale files / permission issues)
+    stage('Prepare workspace') {
+      steps {
+        script {
+          echo "Cleaning workspace to avoid stale files / permission issues"
+          deleteDir()
+        }
+      }
+    }
+
+    // Then checkout
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
 
-  stage('Prepare workspace') {
-    steps {
-      // deleteDir() removes all files in the current workspace (runs as the Jenkins agent user)
-      script {
-      echo "Cleaning workspace to avoid stale files / permission issues"
-      deleteDir()
-    }
-  }
-}
-
     stage('Install') {
       steps {
-        sh 'npm ci'
+        script {
+          // Retry wrapper to mitigate transient network issues
+          retry(2) {
+            sh '''
+              npm config set registry ${NPM_CONFIG_REGISTRY}
+              npm config set fetch-retries ${NPM_CONFIG_FETCH_RETRIES}
+              npm config set fetch-retry-factor ${NPM_CONFIG_FETCH_RETRY_FACTOR}
+              npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
+              npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
+              npm ci --prefer-offline --no-audit --no-fund
+            '''
+          }
+        }
       }
     }
 
@@ -41,7 +60,6 @@ pipeline {
 
     stage('Test') {
       steps {
-        // run tests if present; allow to continue if none
         sh 'if [ -f package.json ] && npm run | grep -q test; then npm test || true; else echo "No tests"; fi'
       }
     }
