@@ -72,10 +72,11 @@ stage('Prepare env (from separate creds)') {
     ]) {
       sh '''
         echo "Writing .env.production (from Jenkins credentials)"
-        cat > .env.production <<'EOF'
+        # NOTE: unquoted heredoc (<<EOF) so shell expands ${VAR} placeholders.
+        cat > .env.production <<EOF
 NODE_ENV=production
-NEXTAUTH_URL=http://ec2-54-167-69-213.compute-1.amazonaws.com
-NEXT_PUBLIC_API=http://ec2-54-167-69-213.compute-1.amazonaws.com
+NEXTAUTH_URL=http://ec2-54-167-69-213.compute-1.amazonaws.com/
+NEXT_PUBLIC_API=http://ec2-54-167-69-213.compute-1.amazonaws.com/
 NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
 PORT=3000
 DATABASE_URL=${DATABASE_URL}
@@ -88,12 +89,14 @@ REDIS_URL=${REDIS_URL}
 TEXT_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_MODEL=gpt-4o-mini
 EOF
-        echo ".env.production written (first 5 lines):"
-        head -n 5 .env.production || true
+        # Do not print secrets; show only keys (non-sensitive) to confirm file written
+        echo ".env.production written — keys present:"
+        sed -n '1,10s/=.*/=****/p' .env.production
       '''
     }
   }
 }
+
 
     stage('Build') {
       steps {
