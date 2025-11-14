@@ -76,8 +76,8 @@ stage('Prepare env (from separate creds)') {
         # NOTE: unquoted heredoc (<<EOF) so shell expands ${VAR} placeholders.
         cat > .env.production <<EOF
 NODE_ENV=production
-NEXTAUTH_URL=http://ec2-54-167-69-213.compute-1.amazonaws.com/
-NEXT_PUBLIC_API=http://ec2-54-167-69-213.compute-1.amazonaws.com/
+NEXTAUTH_URL=http://ec2-54-226-157-2.compute-1.amazonaws.com
+NEXT_PUBLIC_API=http://ec2-54-226-157-2.compute-1.amazonaws.com
 NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
 PORT=3000
 DATABASE_URL=${DATABASE_URL}
