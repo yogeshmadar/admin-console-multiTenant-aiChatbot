@@ -150,10 +150,10 @@ stage('Deploy') {
   }
 
   post {
-    always {
-      // Clean workspace to keep disk tidy
-      cleanWs()
-    }
+    // always {
+    //   // Clean workspace to keep disk tidy
+    //   cleanWs()
+    // }
     success {
       echo 'Success'
     }
