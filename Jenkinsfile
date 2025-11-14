@@ -118,14 +118,35 @@ EOF
       }
     }
 
-    stage('Deploy (placeholder)') {
-      when {
-        branch 'main'
-      }
-      steps {
-        echo 'Add deploy steps here (rsync/ssh/docker/etc.)'
-      }
-    }
+stage('Deploy') {
+  when {
+    branch 'main'
+  }
+  steps {
+    echo "Deploying to EC2 server..."
+
+    // Rsync Next.js build output to server directory
+    sh '''
+      rsync -av --delete .next/ /var/www/ai-chatbot-admin/.next/
+      rsync -av --delete public/ /var/www/ai-chatbot-admin/public/
+      cp package.json /var/www/ai-chatbot-admin/
+      cp -f .env.production /var/www/ai-chatbot-admin/
+    '''
+
+    // Install production deps on server directory
+    sh '''
+    cd /var/www/ai-chatbot-admin
+    npm install --omit=dev
+    '''
+
+    // Restart PM2 (app name: ai-admin-console)
+    sh '''
+    pm2 restart ai-admin-console || pm2 start npm --name ai-admin-console -- start
+    pm2 save
+    '''
+  }
+}
+
   }
 
   post {
