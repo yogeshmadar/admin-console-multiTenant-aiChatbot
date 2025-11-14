@@ -34,27 +34,28 @@ pipeline {
       }
     }
 
-    stage('Install') {
-      steps {
-        script {
-          // Retry wrapper to mitigate transient network issues during package fetch
-          retry(2) {
-            sh '''
-              echo "Configuring npm registry and retries..."
-              npm config set registry ${NPM_CONFIG_REGISTRY}
-              npm config set fetch-retries ${NPM_CONFIG_FETCH_RETRIES}
-              npm config set fetch-retry-factor ${NPM_CONFIG_FETCH_RETRY_FACTOR}
-              npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
-              npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
+stage('Install') {
+  steps {
+    script {
+      retry(2) {
+        sh '''
+          echo "Configuring npm registry, cache and retries..."
+          npm config set registry ${NPM_CONFIG_REGISTRY}
+          # Persist npm cache to /var/cache/jenkins/npm-cache (created and owned by jenkins)
+          npm config set cache /var/cache/jenkins/npm-cache --global
+          npm config set fetch-retries ${NPM_CONFIG_FETCH_RETRIES}
+          npm config set fetch-retry-factor ${NPM_CONFIG_FETCH_RETRY_FACTOR}
+          npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
+          npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
 
-              # Install including devDependencies (ensures webpack, build tools available)
-              echo "Running npm ci (including devDependencies)..."
-              npm ci --include=dev --prefer-offline --no-audit --no-fund
-            '''
-          }
-        }
+          echo "Running npm ci (including devDependencies)..."
+          npm ci --include=dev --prefer-offline --no-audit --no-fund
+        '''
       }
     }
+  }
+}
+
 
     // Optional: write .env.production from a Jenkins Secret Text credential.
     // Create a "Secret text" credential in Jenkins with ID 'PROD_ENV_VARS' containing
