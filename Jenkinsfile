@@ -59,23 +59,41 @@ pipeline {
     // Optional: write .env.production from a Jenkins Secret Text credential.
     // Create a "Secret text" credential in Jenkins with ID 'PROD_ENV_VARS' containing
     // newline-separated KEY=VALUE lines. If you don't need it, remove this stage.
-    stage('Prepare env (optional)') {
-      when {
-        expression { return params.WRITE_ENV == null ? true : params.WRITE_ENV } // default path, editable if you add params
-      }
-      steps {
-        // WithCredentials block will fail the build if the credential ID doesn't exist.
-        // If you don't want to use credentials, remove this stage entirely.
-        withCredentials([string(credentialsId: 'PROD_ENV_VARS', variable: 'PROD_ENV')]) {
-          sh '''
-            echo "Writing .env.production from Jenkins secret"
-            printf "%s\n" "$PROD_ENV" > .env.production
-            echo ".env.production written (first 5 lines):"
-            head -n 5 .env.production || true
-          '''
-        }
-      }
+stage('Prepare env (from separate creds)') {
+  steps {
+    withCredentials([
+      string(credentialsId: 'OPENAI_KEY', variable: 'OPENAI_KEY'),
+      string(credentialsId: 'PINECONE_KEY', variable: 'PINECONE_KEY'),
+      string(credentialsId: 'DATABASE_URL', variable: 'DATABASE_URL'),
+      string(credentialsId: 'REDIS_URL', variable: 'REDIS_URL'),
+      string(credentialsId: 'NEXTAUTH_SECRET', variable: 'NEXTAUTH_SECRET'),
+      string(credentialsId: 'SECRET_KEY', variable: 'SECRET_KEY'),
+      string(credentialsId: 'PINECONE_INDEX', variable: 'PINECONE_INDEX')
+    ]) {
+      sh '''
+        echo "Writing .env.production (from Jenkins credentials)"
+        cat > .env.production <<'EOF'
+NODE_ENV=production
+NEXTAUTH_URL=http://ec2-54-167-69-213.compute-1.amazonaws.com
+NEXT_PUBLIC_API=http://ec2-54-167-69-213.compute-1.amazonaws.com
+NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+PORT=3000
+DATABASE_URL=${DATABASE_URL}
+SECRET_KEY=${SECRET_KEY}
+PINECONE_INDEX=${PINECONE_INDEX}
+PINECONE_KEY=${PINECONE_KEY}
+OPENAI_KEY=${OPENAI_KEY}
+CRAWL_DATA_STORAGE_LOCATION=redis
+REDIS_URL=${REDIS_URL}
+TEXT_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_MODEL=gpt-4o-mini
+EOF
+        echo ".env.production written (first 5 lines):"
+        head -n 5 .env.production || true
+      '''
     }
+  }
+}
 
     stage('Build') {
       steps {
