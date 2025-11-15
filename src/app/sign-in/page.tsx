@@ -144,7 +144,7 @@ export default function SignIn() {
                             letterSpacing: '0.5px',
                         }}
                     >
-                        Administrator Login
+                        Admin Login
                     </Typography>
 
                     {/* Email field */}
