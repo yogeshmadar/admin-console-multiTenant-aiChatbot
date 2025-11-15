@@ -7,47 +7,36 @@ pipeline {
 
   environment {
     NODE_ENV = 'production'
-
-    NPM_CONFIG_REGISTRY = 'https://registry.npmjs.org/'
+    NPM_CONFIG_REGISTRY = 'https://registry.npm.org/'
     NPM_CONFIG_FETCH_RETRIES = '5'
     NPM_CONFIG_FETCH_RETRY_FACTOR = '2'
     NPM_CONFIG_FETCH_RETRY_MINTIMEOUT = '1000'
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT = '60000'
+
+    // server deploy path (adjust if needed)
+    DEPLOY_DIR = '/var/www/ai-chatbot-admin'
+    // directory inside DEPLOY_DIR that will host the live app
+    CURRENT_DIR = "${env.DEPLOY_DIR}/current"
   }
 
   stages {
 
-    /*******************************
-     * CLEAN WORKSPACE
-     *******************************/
     stage('Prepare workspace') {
       steps {
-        script {
+        script { 
           echo "Cleaning workspace..."
           deleteDir()
         }
       }
     }
 
-    /*******************************
-     * GIT CHECKOUT
-     *******************************/
     stage('Checkout') {
       steps {
         checkout scm
-        sh '''
-          echo "Checked out commit: $(git rev-parse --short HEAD)"
-          # Make local workspace exactly match the repository (remove any stale/untracked files)
-          git reset --hard
-          git clean -fdx
-        '''
       }
     }
 
-    /*******************************
-     * INSTALL NODE MODULES (dev included for build)
-     *******************************/
-    stage('Install') {
+    stage('Install (build deps)') {
       steps {
         script {
           retry(2) {
@@ -60,10 +49,7 @@ pipeline {
               npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
               npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
 
-              # Remove any previous build artifacts to force a fresh build
-              rm -rf .next
-
-              echo "Installing dependencies (npm ci)..."
+              echo "Installing dev deps for build..."
               npm ci --include=dev --prefer-offline --no-audit --no-fund
             '''
           }
@@ -71,130 +57,86 @@ pipeline {
       }
     }
 
-    /*******************************
-     * GENERATE TEMP ENV FILE
-     * NOTE: WE DO NOT OVERWRITE
-     * PRODUCTION ENV ON SERVER.
-     * (Kept as requested - unchanged)
-     *******************************/
-    stage('Prepare env (temp only)') {
-      steps {
-        withCredentials([
-          string(credentialsId: 'OPENAI_KEY', variable: 'OPENAI_KEY'),
-          string(credentialsId: 'PINECONE_KEY', variable: 'PINECONE_KEY'),
-          string(credentialsId: 'DATABASE_URL', variable: 'DATABASE_URL'),
-          string(credentialsId: 'REDIS_URL', variable: 'REDIS_URL'),
-          string(credentialsId: 'NEXTAUTH_SECRET', variable: 'NEXTAUTH_SECRET'),
-          string(credentialsId: 'SECRET_KEY', variable: 'SECRET_KEY'),
-          string(credentialsId: 'PINECONE_INDEX', variable: 'PINECONE_INDEX')
-        ]) {
-          sh '''
-            echo "Creating temporary env file..."
-            cat > .env.production.jenkins <<EOF
-NODE_ENV=production
-NEXTAUTH_URL=http://ec2-54-226-157-2.compute-1.amazonaws.com:3000
-NEXT_PUBLIC_API=http://ec2-54-226-157-2.compute-1.amazonaws.com:3000
-NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-PORT=3000
-DATABASE_URL=${DATABASE_URL}
-SECRET_KEY=${SECRET_KEY}
-PINECONE_INDEX=${PINECONE_INDEX}
-PINECONE_KEY=${PINECONE_KEY}
-OPENAI_KEY=${OPENAI_KEY}
-CRAWL_DATA_STORAGE_LOCATION=redis
-REDIS_URL=${REDIS_URL}
-TEXT_EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_MODEL=gpt-4o-mini
-EOF
-
-            echo "Temporary env created:"
-            sed -n '1,10s/=.*/=****/p' .env.production.jenkins
-          '''
-        }
-      }
-    }
-
-    /*******************************
-     * BUILD
-     *******************************/
     stage('Build') {
       steps {
-        sh '''
-          # make sure we build from a fresh .next
-          rm -rf .next
-          NODE_ENV=production npm run build
-        '''
+        sh 'NODE_ENV=production npm run build'
       }
     }
 
-    /*******************************
-     * OPTIONAL TESTS
-     *******************************/
     stage('Test') {
       steps {
-        sh '''
-          if npm run | grep -q test; then
-            npm test || true
-          else
-            echo "No tests"
-          fi
-        '''
+        sh 'if [ -f package.json ] && npm run | grep -q test; then npm test || true; else echo "No tests"; fi'
       }
     }
 
-    /*******************************
-     * ARCHIVE BUILD FILES
-     *******************************/
     stage('Archive') {
       steps {
         archiveArtifacts artifacts: '.next/**, public/**, package.json', allowEmptyArchive: true
       }
     }
 
-    /*******************************
-     * DEPLOY SAFELY (atomic swap)
-     *******************************/
-    stage('Deploy') {
+    stage('Deploy (atomic)') {
       when { branch 'main' }
       steps {
-        echo "Deploying to EC2 (atomic rsync -> mv)..."
-        sh '''
-          set -euo pipefail
+        script {
+          // Variables
+          def tmp = "${env.DEPLOY_DIR}/tmp-deploy-${env.BUILD_NUMBER}"
+          sh """
+            set -e
+            echo "Preparing atomic deploy workspace: ${tmp}"
+            rm -rf "${tmp}"
+            mkdir -p "${tmp}"
 
-          WORKSPACE="$PWD"
-          DEPLOY_DIR="/var/www/ai-chatbot-admin"
-          TIMESTAMP=$(date +%s)
-          TMP_DIR="$DEPLOY_DIR/tmp-deploy-$TIMESTAMP"
+            # rsync workspace -> tmp (exclude env files and node_modules and git)
+            rsync -av --delete \
+              --exclude '.git' \
+              --exclude 'node_modules' \
+              --exclude '.env' \
+              --exclude '.env.production' \
+              ./ "${tmp}/"
 
-          echo "Deploying commit: $(git rev-parse --short HEAD)"
-          echo "Creating temporary deploy dir: $TMP_DIR"
-          sudo mkdir -p "$TMP_DIR"
-          sudo chown $(id -u):$(id -g) "$TMP_DIR" || true
+            # If the server already has a .env.production, copy it to tmp (do not overwrite server envs)
+            if [ -f "${CURRENT_DIR}/.env.production" ]; then
+              echo "Copying existing production env into tmp (will not overwrite server .env.production)"
+              cp -f "${CURRENT_DIR}/.env.production" "${tmp}/.env.production"
+              chmod 640 "${tmp}/.env.production"
+            fi
 
-          # Rsync build & code (exclude envs and node_modules and git)
-          rsync -a --delete \
-            --exclude '.env' \
-            --exclude '.env.production' \
-            --exclude 'node_modules' \
-            --exclude '.git' \
-            "$WORKSPACE"/ "$TMP_DIR"/
+            # Ensure ownership (jenkins should own deploy dirs)
+            chown -R jenkins:jenkins "${tmp}" || true
 
-          # Prepare current_old and swap atomically
-          sudo rm -rf "$DEPLOY_DIR/current_old" || true
-          if [ -d "$DEPLOY_DIR/current" ]; then
-            sudo mv "$DEPLOY_DIR/current" "$DEPLOY_DIR/current_old"
-          fi
+            # Optional: keep a backup of current
+            if [ -d "${CURRENT_DIR}" ]; then
+              mv "${CURRENT_DIR}" "${DEPLOY_DIR}/current_old_${BUILD_NUMBER}" || true
+            fi
 
-          sudo mv "$TMP_DIR" "$DEPLOY_DIR/current"
-          sudo chown -R jenkins:jenkins "$DEPLOY_DIR/current"
+            # Atomic move
+            mv "${tmp}" "${CURRENT_DIR}"
 
-          # Install production deps (run as jenkins user)
-          sudo -u jenkins bash -lc "cd $DEPLOY_DIR/current && npm install --omit=dev --no-audit --no-fund"
+            # Make sure jenkins owns the final dir
+            chown -R jenkins:jenkins "${CURRENT_DIR}"
+          """
+          // Install production dependencies & prepare runtime (run as jenkins)
+          sh """
+            set -e
+            cd ${CURRENT_DIR}
+            echo "Installing production dependencies..."
+            npm install --omit=dev --no-audit --no-fund
 
-          # Restart app with pm2; update-env so pm2 reads OS env changes if you later change .env on server
-          sudo -u jenkins pm2 restart ai-admin-console --update-env || sudo -u jenkins pm2 start npm --name ai-admin-console -- start
-          sudo -u jenkins pm2 save
-        '''
+            echo "Generating Prisma client..."
+            npx prisma generate || true
+
+            # If you use migrations in future: npx prisma migrate deploy
+          """
+          // Restart PM2 using --update-env so any env changes in server are picked up
+          sh """
+            set -e
+            cd ${CURRENT_DIR}
+            echo "Restarting app (pm2)..."
+            pm2 restart ai-admin-console --update-env || pm2 start npm --name ai-admin-console -- start
+            pm2 save
+          """
+        }
       }
     }
   }
