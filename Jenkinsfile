@@ -1,9 +1,7 @@
 pipeline {
   agent any
 
-  tools {
-    nodejs 'NodeJS_18'
-  }
+  tools { nodejs 'NodeJS_18' }
 
   environment {
     NODE_ENV = 'production'
@@ -13,25 +11,20 @@ pipeline {
     NPM_CONFIG_FETCH_RETRY_MINTIMEOUT = '1000'
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT = '60000'
 
-    // server deploy path (adjust if needed)
     DEPLOY_DIR = '/var/www/ai-chatbot-admin'
-    // directory inside DEPLOY_DIR that will host the live app
     CURRENT_DIR = "${env.DEPLOY_DIR}/current"
   }
 
   stages {
-
     stage('Prepare workspace') {
       steps {
-        script { 
-          echo "Cleaning workspace..."
-          deleteDir()
-        }
+        script { echo "Cleaning workspace..."; deleteDir() }
       }
     }
 
     stage('Checkout') {
       steps {
+        // Ensure we check out the SCM so git commands work
         checkout scm
       }
     }
@@ -75,71 +68,76 @@ pipeline {
       }
     }
 
-    stage('Deploy (atomic)') {
-      when { branch 'main' }
+    stage('Deploy (atomic, only for main)') {
       steps {
         script {
-          // Variables
-          def tmp = "${env.DEPLOY_DIR}/tmp-deploy-${env.BUILD_NUMBER}"
-          sh """
-            set -e
-            echo "Preparing atomic deploy workspace: ${tmp}"
-            rm -rf "${tmp}"
-            mkdir -p "${tmp}"
+          // Resolve branch robustly
+          env.DETECTED_BRANCH = env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(script: "git rev-parse --abbrev-ref HEAD", returnStdout: true).trim()
+          echo "Detected branch: ${env.DETECTED_BRANCH}"
 
-            # rsync workspace -> tmp (exclude env files and node_modules and git)
-            rsync -av --delete \
-              --exclude '.git' \
-              --exclude 'node_modules' \
-              --exclude '.env' \
-              --exclude '.env.production' \
-              ./ "${tmp}/"
+          if (env.DETECTED_BRANCH == 'main') {
+            echo "Branch is main — proceeding with atomic deploy..."
 
-            # If the server already has a .env.production, copy it to tmp (do not overwrite server envs)
-            if [ -f "${CURRENT_DIR}/.env.production" ]; then
-              echo "Copying existing production env into tmp (will not overwrite server .env.production)"
-              cp -f "${CURRENT_DIR}/.env.production" "${tmp}/.env.production"
-              chmod 640 "${tmp}/.env.production"
-            fi
+            def tmp = "${env.DEPLOY_DIR}/tmp-deploy-${env.BUILD_NUMBER}"
 
-            # Ensure ownership (jenkins should own deploy dirs)
-            chown -R jenkins:jenkins "${tmp}" || true
+            sh """
+              set -e
+              echo "Preparing atomic deploy dir: ${tmp}"
+              rm -rf "${tmp}"
+              mkdir -p "${tmp}"
 
-            # Optional: keep a backup of current
-            if [ -d "${CURRENT_DIR}" ]; then
-              mv "${CURRENT_DIR}" "${DEPLOY_DIR}/current_old_${BUILD_NUMBER}" || true
-            fi
+              rsync -av --delete \
+                --exclude '.git' \
+                --exclude 'node_modules' \
+                --exclude '.env' \
+                --exclude '.env.production' \
+                ./ "${tmp}/"
 
-            # Atomic move
-            mv "${tmp}" "${CURRENT_DIR}"
+              if [ -f "${CURRENT_DIR}/.env.production" ]; then
+                echo "Copying existing .env.production to tmp (do not overwrite server env)"
+                cp -f "${CURRENT_DIR}/.env.production" "${tmp}/.env.production"
+                chmod 640 "${tmp}/.env.production"
+              fi
 
-            # Make sure jenkins owns the final dir
-            chown -R jenkins:jenkins "${CURRENT_DIR}"
-          """
-          // Install production dependencies & prepare runtime (run as jenkins)
-          sh """
-            set -e
-            cd ${CURRENT_DIR}
-            echo "Installing production dependencies..."
-            npm install --omit=dev --no-audit --no-fund
+              chown -R jenkins:jenkins "${tmp}" || true
 
-            echo "Generating Prisma client..."
-            npx prisma generate || true
+              if [ -d "${CURRENT_DIR}" ]; then
+                echo "Backing up current -> ${DEPLOY_DIR}/current_old_${BUILD_NUMBER}"
+                mv "${CURRENT_DIR}" "${DEPLOY_DIR}/current_old_${BUILD_NUMBER}" || true
+              fi
 
-            # If you use migrations in future: npx prisma migrate deploy
-          """
-          // Restart PM2 using --update-env so any env changes in server are picked up
-          sh """
-            set -e
-            cd ${CURRENT_DIR}
-            echo "Restarting app (pm2)..."
-            pm2 restart ai-admin-console --update-env || pm2 start npm --name ai-admin-console -- start
-            pm2 save
-          """
+              mv "${tmp}" "${CURRENT_DIR}"
+              chown -R jenkins:jenkins "${CURRENT_DIR}"
+            """
+
+            // install production deps and prisma client as jenkins user
+            sh """
+              set -e
+              cd ${CURRENT_DIR}
+              echo "Installing production deps..."
+              sudo -u jenkins npm install --omit=dev --no-audit --no-fund
+              echo "Prisma generate..."
+              sudo -u jenkins npx prisma generate || true
+            """
+
+            // restart pm2 with update-env so env on server is picked up
+            sh """
+              set -e
+              cd ${CURRENT_DIR}
+              echo "Restarting pm2 (update env)..."
+              sudo -u jenkins pm2 restart ai-admin-console --update-env || sudo -u jenkins pm2 start npm --name ai-admin-console -- start
+              sudo -u jenkins pm2 save
+            """
+
+            echo "Deploy finished."
+          } else {
+            echo "Skipping deploy because detected branch '${env.DETECTED_BRANCH}' is not 'main'."
+          }
         }
       }
     }
-  }
+
+  } // stages
 
   post {
     success { echo 'Pipeline SUCCESS' }
