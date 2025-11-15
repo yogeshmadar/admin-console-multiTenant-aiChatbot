@@ -13,9 +13,7 @@ pipeline {
 
     DEPLOY_DIR = '/var/www/ai-chatbot-admin'
     CURRENT_DIR = "${env.DEPLOY_DIR}/current"
-    # local npm config file to avoid permission errors writing to /etc/npmrc
     NPM_USER_CONFIG = "${env.HOME}/.npmrc"
-    # prefer local cache path writable by jenkins (ensure this dir exists and is owned by jenkins)
     NPM_CACHE_DIR = '/var/cache/jenkins/npm-cache'
   }
 
@@ -31,7 +29,6 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        // checkout the branch that triggered this pipeline
         checkout scm
       }
     }
@@ -81,7 +78,6 @@ pipeline {
     stage('Deploy (atomic, only main)') {
       steps {
         script {
-          // Resolve branch robustly and normalize
           def rawBranch = env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(script: "git rev-parse --abbrev-ref HEAD 2>/dev/null || git name-rev --name-only HEAD 2>/dev/null", returnStdout: true).trim()
           def normalized = sh(script: "echo '${rawBranch}' | sed -E 's#^(refs/heads/|remotes/|origin/|remotes/origin/)##g' | sed 's#^origin/##' | sed 's#^remotes/##' | sed 's#^refs/heads/##'", returnStdout: true).trim()
           env.DETECTED_BRANCH = normalized
@@ -91,14 +87,12 @@ pipeline {
           if (env.DETECTED_BRANCH == 'main') {
             echo "Branch is main — proceeding with atomic deploy..."
 
-            // quick permission check: ensure we can write to DEPLOY_DIR
             sh '''
               set -e
               if [ ! -d "${DEPLOY_DIR}" ]; then
                 echo "DEPLOY_DIR ${DEPLOY_DIR} does not exist; attempting to create..."
                 mkdir -p "${DEPLOY_DIR}" || { echo "Failed to create ${DEPLOY_DIR} - ensure directory exists and is writable by jenkins"; exit 1; }
               fi
-              # check write permission - if not writable, fail with helpful message
               if [ ! -w "${DEPLOY_DIR}" ]; then
                 echo "ERROR: ${DEPLOY_DIR} is not writable by the pipeline user. Fix with:"
                 echo "  sudo chown -R jenkins:jenkins ${DEPLOY_DIR}"
@@ -109,7 +103,6 @@ pipeline {
 
             def tmp = "${env.DEPLOY_DIR}/tmp-deploy-${env.BUILD_NUMBER}"
 
-            // atomic rsync -> move approach (no sudo)
             sh """
               set -e
               echo "Preparing atomic deploy dir: ${tmp}"
@@ -123,33 +116,26 @@ pipeline {
                 --exclude '.env.production' \
                 ./ "${tmp}/"
 
-              # preserve server .env.production if exists (do NOT overwrite production secrets)
               if [ -f "${CURRENT_DIR}/.env.production" ]; then
                 echo "Copying existing .env.production to tmp (do not overwrite server env)"
                 cp -f "${CURRENT_DIR}/.env.production" "${tmp}/.env.production"
                 chmod 640 "${tmp}/.env.production"
               fi
 
-              # make sure tmp owned by jenkins (chown might need sudo in some environments; ignore failure)
               chown -R jenkins:jenkins "${tmp}" || true
 
-              # backup current
               if [ -d "${CURRENT_DIR}" ]; then
                 echo "Backing up current -> ${DEPLOY_DIR}/current_old_${BUILD_NUMBER}"
                 mv "${CURRENT_DIR}" "${DEPLOY_DIR}/current_old_${BUILD_NUMBER}" || true
               fi
 
-              # atomic move
               mv "${tmp}" "${CURRENT_DIR}"
               chown -R jenkins:jenkins "${CURRENT_DIR}" || true
             """
 
-            // install production deps and generate prisma client (run as jenkins pipeline user)
             sh """
               set -e
               cd ${CURRENT_DIR}
-
-              # ensure npm uses a user-local config and cache to avoid global writes
               export npm_config_userconfig="${NPM_USER_CONFIG}"
               export npm_config_cache="${NPM_CACHE_DIR}"
 
@@ -160,7 +146,6 @@ pipeline {
               npx prisma generate || true
             """
 
-            // restart pm2 so server picks up .env (update env)
             sh """
               set -e
               cd ${CURRENT_DIR}
@@ -180,6 +165,6 @@ pipeline {
 
   post {
     success { echo 'Pipeline SUCCESS' }
-    failure { echo 'Pipeline FAILED' }
+    failure { echo 'Pipeline FAILED - see console output' }
   }
 }
