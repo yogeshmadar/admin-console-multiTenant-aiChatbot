@@ -35,17 +35,11 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
-        sh '''
-          echo "Checked out commit: $(git rev-parse --short HEAD)"
-          # Make local workspace exactly match the repository (remove any stale/untracked files)
-          git reset --hard
-          git clean -fdx
-        '''
       }
     }
 
     /*******************************
-     * INSTALL NODE MODULES (dev included for build)
+     * INSTALL NODE MODULES
      *******************************/
     stage('Install') {
       steps {
@@ -60,10 +54,7 @@ pipeline {
               npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
               npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
 
-              # Remove any previous build artifacts to force a fresh build
-              rm -rf .next
-
-              echo "Installing dependencies (npm ci)..."
+              echo "Installing dependencies..."
               npm ci --include=dev --prefer-offline --no-audit --no-fund
             '''
           }
@@ -75,7 +66,6 @@ pipeline {
      * GENERATE TEMP ENV FILE
      * NOTE: WE DO NOT OVERWRITE
      * PRODUCTION ENV ON SERVER.
-     * (Kept as requested - unchanged)
      *******************************/
     stage('Prepare env (temp only)') {
       steps {
@@ -119,11 +109,7 @@ EOF
      *******************************/
     stage('Build') {
       steps {
-        sh '''
-          # make sure we build from a fresh .next
-          rm -rf .next
-          NODE_ENV=production npm run build
-        '''
+        sh 'NODE_ENV=production npm run build'
       }
     }
 
@@ -152,48 +138,37 @@ EOF
     }
 
     /*******************************
-     * DEPLOY SAFELY (atomic swap)
+     * DEPLOY SAFELY
      *******************************/
     stage('Deploy') {
       when { branch 'main' }
       steps {
-        echo "Deploying to EC2 (atomic rsync -> mv)..."
+        echo "Deploying to EC2..."
+
         sh '''
-          set -euo pipefail
-
-          WORKSPACE="$PWD"
-          DEPLOY_DIR="/var/www/ai-chatbot-admin"
-          TIMESTAMP=$(date +%s)
-          TMP_DIR="$DEPLOY_DIR/tmp-deploy-$TIMESTAMP"
-
-          echo "Deploying commit: $(git rev-parse --short HEAD)"
-          echo "Creating temporary deploy dir: $TMP_DIR"
-          sudo mkdir -p "$TMP_DIR"
-          sudo chown $(id -u):$(id -g) "$TMP_DIR" || true
-
-          # Rsync build & code (exclude envs and node_modules and git)
-          rsync -a --delete \
+          # SAFELY rsync only build & code — DO NOT TOUCH ENV FILES
+          sudo rsync -av --delete \
             --exclude '.env' \
             --exclude '.env.production' \
             --exclude 'node_modules' \
             --exclude '.git' \
-            "$WORKSPACE"/ "$TMP_DIR"/
+            .next/ /var/www/ai-chatbot-admin/current/.next/
 
-          # Prepare current_old and swap atomically
-          sudo rm -rf "$DEPLOY_DIR/current_old" || true
-          if [ -d "$DEPLOY_DIR/current" ]; then
-            sudo mv "$DEPLOY_DIR/current" "$DEPLOY_DIR/current_old"
-          fi
+          sudo rsync -av --delete public/ /var/www/ai-chatbot-admin/current/public/
 
-          sudo mv "$TMP_DIR" "$DEPLOY_DIR/current"
-          sudo chown -R jenkins:jenkins "$DEPLOY_DIR/current"
+          sudo cp -f package.json /var/www/ai-chatbot-admin/current/
+        '''
 
-          # Install production deps (run as jenkins user)
-          sudo -u jenkins bash -lc "cd $DEPLOY_DIR/current && npm install --omit=dev --no-audit --no-fund"
+        sh '''
+          cd /var/www/ai-chatbot-admin/current
+          echo "Installing production deps..."
+          npm install --omit=dev --no-audit --no-fund
+        '''
 
-          # Restart app with pm2; update-env so pm2 reads OS env changes if you later change .env on server
-          sudo -u jenkins pm2 restart ai-admin-console --update-env || sudo -u jenkins pm2 start npm --name ai-admin-console -- start
-          sudo -u jenkins pm2 save
+        sh '''
+          echo "Restarting PM2..."
+          pm2 restart ai-admin-console || pm2 start npm --name ai-admin-console -- start
+          pm2 save
         '''
       }
     }
