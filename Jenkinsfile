@@ -72,9 +72,13 @@ pipeline {
       steps {
         script {
           // Resolve branch robustly
-          env.DETECTED_BRANCH = env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(script: "git rev-parse --abbrev-ref HEAD", returnStdout: true).trim()
-          echo "Detected branch: ${env.DETECTED_BRANCH}"
-
+         // determine branch (robustly) then normalize by removing common prefixes
+          def rawBranch = env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(script: "git rev-parse --abbrev-ref HEAD 2>/dev/null || git name-rev --name-only HEAD 2>/dev/null", returnStdout: true).trim()
+         // run a shell to strip prefixes like origin/ refs/heads/ remotes/origin/
+          def normalized = sh(script: "echo '${rawBranch}' | sed -E 's#^(refs/heads/|remotes/|origin/|remotes/origin/)##g' | sed 's#^origin/##' | sed 's#^remotes/##' | sed 's#^refs/heads/##'", returnStdout: true).trim()
+          env.DETECTED_BRANCH = normalized
+          echo "Raw branch: ${rawBranch}"
+          echo "Detected branch (normalized): ${env.DETECTED_BRANCH}"
           if (env.DETECTED_BRANCH == 'main') {
             echo "Branch is main — proceeding with atomic deploy..."
 
