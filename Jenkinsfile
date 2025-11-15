@@ -2,15 +2,12 @@ pipeline {
   agent any
 
   tools {
-    // Make sure the tool name matches Manage Jenkins -> Global Tool Configuration
     nodejs 'NodeJS_18'
   }
 
   environment {
-    // Keep NODE_ENV production for build/runtime; dev deps will be installed explicitly below
     NODE_ENV = 'production'
 
-    // npm retry/configuration (tune if needed)
     NPM_CONFIG_REGISTRY = 'https://registry.npmjs.org/'
     NPM_CONFIG_FETCH_RETRIES = '5'
     NPM_CONFIG_FETCH_RETRY_FACTOR = '2'
@@ -19,65 +16,74 @@ pipeline {
   }
 
   stages {
+
+    /*******************************
+     * CLEAN WORKSPACE
+     *******************************/
     stage('Prepare workspace') {
       steps {
         script {
-          echo "Cleaning workspace to avoid stale files / permission issues"
+          echo "Cleaning workspace..."
           deleteDir()
         }
       }
     }
 
+    /*******************************
+     * GIT CHECKOUT
+     *******************************/
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
 
-stage('Install') {
-  steps {
-    script {
-      retry(2) {
-        sh '''
-          echo "Configuring npm registry, cache and retries..."
-          npm config set registry ${NPM_CONFIG_REGISTRY}
-          # Persist npm cache to /var/cache/jenkins/npm-cache (created and owned by jenkins)
-          npm config set cache /var/cache/jenkins/npm-cache --global
-          npm config set fetch-retries ${NPM_CONFIG_FETCH_RETRIES}
-          npm config set fetch-retry-factor ${NPM_CONFIG_FETCH_RETRY_FACTOR}
-          npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
-          npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
+    /*******************************
+     * INSTALL NODE MODULES
+     *******************************/
+    stage('Install') {
+      steps {
+        script {
+          retry(2) {
+            sh '''
+              echo "Configuring npm..."
+              npm config set registry ${NPM_CONFIG_REGISTRY}
+              npm config set cache /var/cache/jenkins/npm-cache --global
+              npm config set fetch-retries ${NPM_CONFIG_FETCH_RETRIES}
+              npm config set fetch-retry-factor ${NPM_CONFIG_FETCH_RETRY_FACTOR}
+              npm config set fetch-retry-mintimeout ${NPM_CONFIG_FETCH_RETRY_MINTIMEOUT}
+              npm config set fetch-retry-maxtimeout ${NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT}
 
-          echo "Running npm ci (including devDependencies)..."
-          npm ci --include=dev --prefer-offline --no-audit --no-fund
-        '''
+              echo "Installing dependencies..."
+              npm ci --include=dev --prefer-offline --no-audit --no-fund
+            '''
+          }
+        }
       }
     }
-  }
-}
 
-
-    // Optional: write .env.production from a Jenkins Secret Text credential.
-    // Create a "Secret text" credential in Jenkins with ID 'PROD_ENV_VARS' containing
-    // newline-separated KEY=VALUE lines. If you don't need it, remove this stage.
-stage('Prepare env (from separate creds)') {
-  steps {
-    withCredentials([
-      string(credentialsId: 'OPENAI_KEY', variable: 'OPENAI_KEY'),
-      string(credentialsId: 'PINECONE_KEY', variable: 'PINECONE_KEY'),
-      string(credentialsId: 'DATABASE_URL', variable: 'DATABASE_URL'),
-      string(credentialsId: 'REDIS_URL', variable: 'REDIS_URL'),
-      string(credentialsId: 'NEXTAUTH_SECRET', variable: 'NEXTAUTH_SECRET'),
-      string(credentialsId: 'SECRET_KEY', variable: 'SECRET_KEY'),
-      string(credentialsId: 'PINECONE_INDEX', variable: 'PINECONE_INDEX')
-    ]) {
-      sh '''
-        echo "Writing .env.production (from Jenkins credentials)"
-        # NOTE: unquoted heredoc (<<EOF) so shell expands ${VAR} placeholders.
-        cat > .env.production <<EOF
+    /*******************************
+     * GENERATE TEMP ENV FILE
+     * NOTE: WE DO NOT OVERWRITE
+     * PRODUCTION ENV ON SERVER.
+     *******************************/
+    stage('Prepare env (temp only)') {
+      steps {
+        withCredentials([
+          string(credentialsId: 'OPENAI_KEY', variable: 'OPENAI_KEY'),
+          string(credentialsId: 'PINECONE_KEY', variable: 'PINECONE_KEY'),
+          string(credentialsId: 'DATABASE_URL', variable: 'DATABASE_URL'),
+          string(credentialsId: 'REDIS_URL', variable: 'REDIS_URL'),
+          string(credentialsId: 'NEXTAUTH_SECRET', variable: 'NEXTAUTH_SECRET'),
+          string(credentialsId: 'SECRET_KEY', variable: 'SECRET_KEY'),
+          string(credentialsId: 'PINECONE_INDEX', variable: 'PINECONE_INDEX')
+        ]) {
+          sh '''
+            echo "Creating temporary env file..."
+            cat > .env.production.jenkins <<EOF
 NODE_ENV=production
-NEXTAUTH_URL=http://ec2-54-226-157-2.compute-1.amazonaws.com
-NEXT_PUBLIC_API=http://ec2-54-226-157-2.compute-1.amazonaws.com
+NEXTAUTH_URL=http://ec2-54-226-157-2.compute-1.amazonaws.com:3000
+NEXT_PUBLIC_API=http://ec2-54-226-157-2.compute-1.amazonaws.com:3000
 NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
 PORT=3000
 DATABASE_URL=${DATABASE_URL}
@@ -90,75 +96,86 @@ REDIS_URL=${REDIS_URL}
 TEXT_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_MODEL=gpt-4o-mini
 EOF
-        # Do not print secrets; show only keys (non-sensitive) to confirm file written
-        echo ".env.production written — keys present:"
-        sed -n '1,10s/=.*/=****/p' .env.production
-      '''
+
+            echo "Temporary env created:"
+            sed -n '1,10s/=.*/=****/p' .env.production.jenkins
+          '''
+        }
+      }
     }
-  }
-}
 
-
+    /*******************************
+     * BUILD
+     *******************************/
     stage('Build') {
       steps {
-        // Force production when running build to generate optimized output
         sh 'NODE_ENV=production npm run build'
       }
     }
 
+    /*******************************
+     * OPTIONAL TESTS
+     *******************************/
     stage('Test') {
       steps {
-        sh 'if [ -f package.json ] && npm run | grep -q test; then npm test || true; else echo "No tests"; fi'
+        sh '''
+          if npm run | grep -q test; then
+            npm test || true
+          else
+            echo "No tests"
+          fi
+        '''
       }
     }
 
+    /*******************************
+     * ARCHIVE BUILD FILES
+     *******************************/
     stage('Archive') {
       steps {
-        archiveArtifacts artifacts: '.next/**, package.json, public/**', allowEmptyArchive: true
+        archiveArtifacts artifacts: '.next/**, public/**, package.json', allowEmptyArchive: true
       }
     }
 
-stage('Deploy') {
-  when {
-    branch 'main'
-  }
-  steps {
-    echo "Deploying to EC2 server..."
+    /*******************************
+     * DEPLOY SAFELY
+     *******************************/
+    stage('Deploy') {
+      when { branch 'main' }
+      steps {
+        echo "Deploying to EC2..."
 
-    // Rsync Next.js build output to server directory
-    sh '''
-      rsync -av --delete .next/ /var/www/ai-chatbot-admin/.next/
-      rsync -av --delete public/ /var/www/ai-chatbot-admin/public/
-      cp package.json /var/www/ai-chatbot-admin/
-      cp -f .env.production /var/www/ai-chatbot-admin/
-    '''
+        sh '''
+          # SAFELY rsync only build & code — DO NOT TOUCH ENV FILES
+          sudo rsync -av --delete \
+            --exclude '.env' \
+            --exclude '.env.production' \
+            --exclude 'node_modules' \
+            --exclude '.git' \
+            .next/ /var/www/ai-chatbot-admin/current/.next/
 
-    // Install production deps on server directory
-    sh '''
-    cd /var/www/ai-chatbot-admin
-    npm install --omit=dev
-    '''
+          sudo rsync -av --delete public/ /var/www/ai-chatbot-admin/current/public/
 
-    // Restart PM2 (app name: ai-admin-console)
-    sh '''
-    pm2 restart ai-admin-console || pm2 start npm --name ai-admin-console -- start
-    pm2 save
-    '''
-  }
-}
+          sudo cp -f package.json /var/www/ai-chatbot-admin/current/
+        '''
 
+        sh '''
+          cd /var/www/ai-chatbot-admin/current
+          echo "Installing production deps..."
+          npm install --omit=dev --no-audit --no-fund
+        '''
+
+        sh '''
+          echo "Restarting PM2..."
+          pm2 restart ai-admin-console || pm2 start npm --name ai-admin-console -- start
+          pm2 save
+        '''
+      }
+    }
   }
 
   post {
-    // always {
-    //   // Clean workspace to keep disk tidy
-    //   cleanWs()
-    // }
-    success {
-      echo 'Success'
-    }
-    failure {
-      echo 'Failed'
-    }
+    success { echo 'Pipeline SUCCESS' }
+    failure { echo 'Pipeline FAILED' }
   }
 }
